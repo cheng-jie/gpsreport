@@ -7,6 +7,17 @@
         <span class="font-bold text-lg tracking-wide">GPS 轨迹采集</span>
       </div>
       <div class="flex items-center gap-2">
+        <!-- Layer picker button -->
+        <button
+          @click="showLayerPicker = !showLayerPicker"
+          class="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 active:scale-95 rounded-lg px-2.5 py-1.5 text-xs transition-all"
+        >
+          <span>{{ PROVIDER_META[activeProvider].icon }}</span>
+          <span class="text-gray-200">{{ PROVIDER_META[activeProvider].label }}</span>
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
         <!-- GPS signal indicator -->
         <div class="flex items-center gap-1 text-sm">
           <span
@@ -163,6 +174,45 @@
       </div>
     </div>
 
+    <!-- Layer picker panel -->
+    <Teleport to="body">
+      <Transition name="layer-fade">
+        <div
+          v-if="showLayerPicker"
+          class="fixed inset-0 z-[9999] flex items-end justify-center bg-black/60 backdrop-blur-sm"
+          @click.self="showLayerPicker = false"
+        >
+        <div class="w-full max-w-lg bg-gray-800 rounded-t-2xl px-4 pt-4 pb-8 shadow-2xl">
+          <div class="mx-auto w-10 h-1 bg-gray-600 rounded-full mb-4"></div>
+          <p class="text-sm font-semibold text-gray-300 mb-3">选择地图底图</p>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              v-for="(meta, key) in PROVIDER_META"
+              :key="key"
+              @click="switchProvider(key as MapProvider)"
+              class="flex items-center gap-3 p-3 rounded-xl text-left transition-all active:scale-95"
+              :class="activeProvider === key
+                ? 'bg-blue-600 text-white ring-2 ring-blue-400'
+                : 'bg-gray-700 text-gray-200 hover:bg-gray-600'"
+            >
+              <span class="text-2xl leading-none">{{ meta.icon }}</span>
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-sm leading-tight">{{ meta.label }}</div>
+                <div class="text-xs mt-0.5 truncate" :class="activeProvider === key ? 'text-blue-200' : 'text-gray-500'">
+                  {{ meta.coordSystem }}
+                </div>
+              </div>
+              <svg v-if="activeProvider === key" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-blue-200 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+              </svg>
+            </button>
+          </div>
+          <p class="text-xs text-gray-500 mt-3 text-center">切换图层时轨迹坐标自动转换，GPS 数据始终以 WGS-84 存储</p>
+        </div>
+      </div>
+      </Transition>
+    </Teleport>
+
     <!-- Report Modal -->
     <ReportModal
       v-if="reportVisible"
@@ -180,6 +230,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import ReportModal from './ReportModal.vue'
+import { type MapProvider, createTileLayer, PROVIDER_META } from '../utils/mapLayers'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface TrackPoint {
@@ -203,11 +254,15 @@ const reportVisible = ref(false)
 const hasGps = ref(false)
 const currentLat = ref(0)
 const currentLng = ref(0)
+const activeProvider = ref<MapProvider>('gaode')
+const showLayerPicker = ref(false)
 
 // ─── Leaflet map objects ───────────────────────────────────────────────────────
 let map: L.Map | null = null
 let polyline: L.Polyline | null = null
 let currentMarker: L.CircleMarker | null = null
+let currentTileBase: L.TileLayer | null = null
+let currentTileLabel: L.TileLayer | null = null
 let watchId: number | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
 let startTimestamp = 0
@@ -245,10 +300,11 @@ onMounted(() => {
     attributionControl: true,
   }).setView([39.9042, 116.4074], 15)
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap contributors',
-  }).addTo(map)
+  const { base: initBase, label: initLabel } = createTileLayer('gaode')
+  currentTileBase = initBase
+  currentTileLabel = initLabel ?? null
+  initBase.addTo(map)
+  if (initLabel) initLabel.addTo(map)
 
   L.control.zoom({ position: 'bottomleft' }).addTo(map)
 
@@ -267,7 +323,8 @@ onMounted(() => {
         hasGps.value = true
         currentLat.value = pos.coords.latitude
         currentLng.value = pos.coords.longitude
-        map?.setView([pos.coords.latitude, pos.coords.longitude], 16)
+        const [initLat, initLng] = toDisplayLatLng(pos.coords.latitude, pos.coords.longitude)
+        map?.setView([initLat, initLng], 16)
         updateCurrentMarker(pos.coords.latitude, pos.coords.longitude)
       },
       () => {
@@ -288,8 +345,9 @@ onUnmounted(() => {
 // ─── GPS helpers ──────────────────────────────────────────────────────────────
 function updateCurrentMarker(lat: number, lng: number) {
   if (!map) return
+  const [dLat, dLng] = toDisplayLatLng(lat, lng)
   if (!currentMarker) {
-    currentMarker = L.circleMarker([lat, lng], {
+    currentMarker = L.circleMarker([dLat, dLng], {
       radius: 8,
       color: '#fff',
       weight: 3,
@@ -297,7 +355,7 @@ function updateCurrentMarker(lat: number, lng: number) {
       fillOpacity: 1,
     }).addTo(map)
   } else {
-    currentMarker.setLatLng([lat, lng])
+    currentMarker.setLatLng([dLat, dLng])
   }
 }
 
@@ -336,8 +394,9 @@ function onGpsSuccess(pos: GeolocationPosition) {
     timestamp: pos.timestamp,
   })
 
-  polyline?.setLatLngs(trackPoints.value.map((p) => [p.lat, p.lng]))
-  map?.panTo([latitude, longitude])
+  polyline?.setLatLngs(trackPoints.value.map((p) => toDisplayLatLng(p.lat, p.lng)))
+  const [dLat, dLng] = toDisplayLatLng(latitude, longitude)
+  map?.panTo([dLat, dLng])
 }
 
 function onGpsError(err: GeolocationPositionError) {
@@ -425,7 +484,43 @@ function resetTracking() {
 
 function centerMap() {
   if (currentLat.value && currentLng.value) {
-    map?.setView([currentLat.value, currentLng.value], map.getZoom())
+    const [dLat, dLng] = toDisplayLatLng(currentLat.value, currentLng.value)
+    map?.setView([dLat, dLng], map.getZoom())
+  }
+}
+
+// ─── Map layer helpers ────────────────────────────────────────────────────────
+function toDisplayLatLng(lat: number, lng: number): [number, number] {
+  return PROVIDER_META[activeProvider.value].coordTransform(lat, lng)
+}
+
+function redrawTrack() {
+  polyline?.setLatLngs(trackPoints.value.map((p) => toDisplayLatLng(p.lat, p.lng)))
+  if (currentLat.value && currentLng.value) {
+    updateCurrentMarker(currentLat.value, currentLng.value)
+  }
+}
+
+function switchProvider(provider: MapProvider) {
+  if (!map) return
+  if (provider === 'tianditu' && !import.meta.env.VITE_TIANDITU_KEY) {
+    errorMsg.value = '使用天地图需要在 .env.local 中配置 VITE_TIANDITU_KEY'
+    showLayerPicker.value = false
+    return
+  }
+  if (currentTileBase) map.removeLayer(currentTileBase)
+  if (currentTileLabel) map.removeLayer(currentTileLabel)
+  const { base, label } = createTileLayer(provider)
+  currentTileBase = base
+  currentTileLabel = label ?? null
+  base.addTo(map)
+  if (label) label.addTo(map)
+  activeProvider.value = provider
+  showLayerPicker.value = false
+  redrawTrack()
+  if (currentLat.value && currentLng.value) {
+    const [dLat, dLng] = toDisplayLatLng(currentLat.value, currentLng.value)
+    map.setView([dLat, dLng], map.getZoom())
   }
 }
 
@@ -451,3 +546,24 @@ function handleReportConfirm(data: { name: string; desc: string }) {
   resetTracking()
 }
 </script>
+
+<style scoped>
+.layer-fade-enter-active,
+.layer-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.layer-fade-enter-active > div,
+.layer-fade-leave-active > div {
+  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.layer-fade-enter-from,
+.layer-fade-leave-to {
+  opacity: 0;
+}
+.layer-fade-enter-from > div {
+  transform: translateY(100%);
+}
+.layer-fade-leave-to > div {
+  transform: translateY(100%);
+}
+</style>

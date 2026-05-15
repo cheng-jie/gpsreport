@@ -52,27 +52,17 @@
         </div>
       </div>
 
-      <!-- Recording badge -->
+      <!-- Top-right status badge -->
       <div
-        v-if="status === 'recording'"
-        class="absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-red-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg animate-pulse"
+        v-if="topRightStatus"
+        :class="topRightStatus.classes"
       >
-        <span class="inline-block w-2 h-2 rounded-full bg-white"></span>
-        采集中
-      </div>
-      <div
-        v-if="status === 'paused'"
-        class="absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-yellow-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg"
-      >
-        <span class="text-white">⏸</span>
-        已暂停
-      </div>
-      <div
-        v-if="status === 'stopped'"
-        class="absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-gray-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg"
-      >
-        <span class="text-white">⏹</span>
-        已停止
+        <span
+          v-if="topRightStatus.dot"
+          class="inline-block w-2 h-2 rounded-full bg-white"
+        ></span>
+        <span v-else class="text-white">{{ topRightStatus.icon }}</span>
+        {{ topRightStatus.text }}
       </div>
 
       <!-- Center on location button -->
@@ -242,6 +232,7 @@ interface TrackPoint {
 }
 
 type TrackStatus = 'idle' | 'recording' | 'paused' | 'stopped'
+type GpsSignalState = 'searching' | 'connected' | 'lost'
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const mapRef = ref<HTMLDivElement | null>(null)
@@ -252,6 +243,7 @@ const elapsedSeconds = ref(0)
 const errorMsg = ref('')
 const reportVisible = ref(false)
 const hasGps = ref(false)
+const gpsSignalState = ref<GpsSignalState>('searching')
 const currentLat = ref(0)
 const currentLng = ref(0)
 const activeProvider = ref<MapProvider>('gaode')
@@ -269,6 +261,9 @@ let startTimestamp = 0
 let accumulatedSeconds = 0
 let wakeLock: WakeLockSentinel | null = null
 let hiddenAt: number | null = null
+let lastGpsSuccessAt: number | null = null
+
+const GPS_LOST_THRESHOLD_MS = 30000
 
 // ─── Wake Lock ────────────────────────────────────────────────────────────────
 async function acquireWakeLock() {
@@ -306,12 +301,62 @@ function onVisibilityChange() {
 
 // ─── Computed ─────────────────────────────────────────────────────────────────
 const gpsSignalClass = computed(() => {
-  if (!hasGps.value) return 'bg-gray-500'
-  return 'bg-green-400 shadow-[0_0_6px_2px_rgba(74,222,128,0.6)]'
+  if (gpsSignalState.value === 'connected') return 'bg-green-400 shadow-[0_0_6px_2px_rgba(74,222,128,0.6)]'
+  if (gpsSignalState.value === 'lost') return 'bg-orange-400 shadow-[0_0_6px_2px_rgba(251,146,60,0.6)]'
+  return 'bg-gray-500'
 })
 
 const gpsSignalText = computed(() => {
-  return hasGps.value ? 'GPS 已连接' : '等待 GPS'
+  if (gpsSignalState.value === 'connected') return 'GPS 已连接'
+  if (gpsSignalState.value === 'lost') return 'GPS 信号丢失'
+  return '等待 GPS'
+})
+
+const topRightStatus = computed(() => {
+  if (status.value === 'recording') {
+    if (gpsSignalState.value === 'lost') {
+      return {
+        classes: 'absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-orange-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg',
+        icon: '⚠',
+        text: 'GPS 信号丢失',
+        dot: false,
+      }
+    }
+    if (gpsSignalState.value === 'searching') {
+      return {
+        classes: 'absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-blue-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg',
+        icon: '📡',
+        text: '定位中',
+        dot: false,
+      }
+    }
+    return {
+      classes: 'absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-red-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg animate-pulse',
+      icon: '',
+      text: '采集中',
+      dot: true,
+    }
+  }
+
+  if (status.value === 'paused') {
+    return {
+      classes: 'absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-yellow-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg',
+      icon: '⏸',
+      text: '已暂停',
+      dot: false,
+    }
+  }
+
+  if (status.value === 'stopped') {
+    return {
+      classes: 'absolute top-3 right-3 z-10 flex items-center gap-1.5 bg-gray-600/90 backdrop-blur-sm rounded-full px-3 py-1 text-xs font-semibold shadow-lg',
+      icon: '⏹',
+      text: '已停止',
+      dot: false,
+    }
+  }
+
+  return null
 })
 
 const formattedDuration = computed(() => {
@@ -357,6 +402,8 @@ onMounted(() => {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         hasGps.value = true
+        gpsSignalState.value = 'connected'
+        lastGpsSuccessAt = Date.now()
         currentLat.value = pos.coords.latitude
         currentLng.value = pos.coords.longitude
         const [initLat, initLng] = toDisplayLatLng(pos.coords.latitude, pos.coords.longitude)
@@ -414,6 +461,8 @@ function calcDistance(lat1: number, lng1: number, lat2: number, lng2: number): n
 function onGpsSuccess(pos: GeolocationPosition) {
   const { latitude, longitude, accuracy, altitude } = pos.coords
   hasGps.value = true
+  gpsSignalState.value = 'connected'
+  lastGpsSuccessAt = Date.now()
   currentLat.value = latitude
   currentLng.value = longitude
   updateCurrentMarker(latitude, longitude)
@@ -442,15 +491,37 @@ function onGpsSuccess(pos: GeolocationPosition) {
 }
 
 function onGpsError(err: GeolocationPositionError) {
-  hasGps.value = false
   if (err.code === GeolocationPositionError.PERMISSION_DENIED) {
+    hasGps.value = false
     errorMsg.value = 'GPS 权限被拒绝，请在浏览器设置中授权位置访问'
     stopTracking()
   } else if (err.code === GeolocationPositionError.TIMEOUT) {
-    errorMsg.value = 'GPS 信号超时，请确保设备 GPS 已开启并处于室外'
+    updateGpsSignalState()
+    errorMsg.value = gpsSignalState.value === 'lost'
+      ? '长时间未获取到 GPS 位置，信号可能已丢失'
+      : 'GPS 定位中，请确保设备 GPS 已开启并处于室外'
   } else {
+    hasGps.value = false
+    gpsSignalState.value = 'searching'
     errorMsg.value = `GPS 错误: ${err.message}`
   }
+}
+
+function updateGpsSignalState() {
+  if (status.value !== 'recording') return
+
+  const now = Date.now()
+  const anchor = lastGpsSuccessAt ?? startTimestamp
+  const signalLost = now - anchor >= GPS_LOST_THRESHOLD_MS
+
+  if (lastGpsSuccessAt === null) {
+    hasGps.value = false
+    gpsSignalState.value = signalLost ? 'lost' : 'searching'
+    return
+  }
+
+  hasGps.value = !signalLost
+  gpsSignalState.value = signalLost ? 'lost' : 'connected'
 }
 
 function stopWatchAndTimer() {
@@ -472,6 +543,9 @@ function startTracking() {
   }
   errorMsg.value = ''
   status.value = 'recording'
+  hasGps.value = false
+  gpsSignalState.value = 'searching'
+  lastGpsSuccessAt = null
   startTimestamp = Date.now()
   acquireWakeLock()
 
@@ -483,6 +557,7 @@ function startTracking() {
 
   timerInterval = setInterval(() => {
     elapsedSeconds.value = accumulatedSeconds + Math.floor((Date.now() - startTimestamp) / 1000)
+    updateGpsSignalState()
   }, 1000)
 }
 
@@ -496,6 +571,9 @@ function pauseTracking() {
 function resumeTracking() {
   errorMsg.value = ''
   status.value = 'recording'
+  hasGps.value = false
+  gpsSignalState.value = 'searching'
+  lastGpsSuccessAt = null
   startTimestamp = Date.now()
   acquireWakeLock()
 
@@ -507,6 +585,7 @@ function resumeTracking() {
 
   timerInterval = setInterval(() => {
     elapsedSeconds.value = accumulatedSeconds + Math.floor((Date.now() - startTimestamp) / 1000)
+    updateGpsSignalState()
   }, 1000)
 }
 

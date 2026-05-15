@@ -31,7 +31,7 @@
 
     <!-- Map Area -->
     <div class="relative flex-1 overflow-hidden">
-      <div ref="mapRef" class="w-full h-full"></div>
+      <div ref="mapRef" class="relative z-0 w-full h-full"></div>
 
       <!-- Stats overlay (top-left on map) -->
       <div

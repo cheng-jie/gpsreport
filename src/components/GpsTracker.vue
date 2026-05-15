@@ -263,7 +263,7 @@ let wakeLock: WakeLockSentinel | null = null
 let hiddenAt: number | null = null
 let lastGpsSuccessAt: number | null = null
 
-const GPS_LOST_THRESHOLD_MS = 30000
+const GPS_SIGNAL_LOST_THRESHOLD_MS = 30000
 
 // ─── Wake Lock ────────────────────────────────────────────────────────────────
 async function acquireWakeLock() {
@@ -511,15 +511,14 @@ function updateGpsSignalState() {
   if (status.value !== 'recording') return
 
   const now = Date.now()
-  const anchor = lastGpsSuccessAt ?? startTimestamp
-  const signalLost = now - anchor >= GPS_LOST_THRESHOLD_MS
-
   if (lastGpsSuccessAt === null) {
+    const signalLost = now - startTimestamp >= GPS_SIGNAL_LOST_THRESHOLD_MS
     hasGps.value = false
     gpsSignalState.value = signalLost ? 'lost' : 'searching'
     return
   }
 
+  const signalLost = now - lastGpsSuccessAt >= GPS_SIGNAL_LOST_THRESHOLD_MS
   hasGps.value = !signalLost
   gpsSignalState.value = signalLost ? 'lost' : 'connected'
 }

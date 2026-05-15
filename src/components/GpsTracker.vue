@@ -267,6 +267,42 @@ let watchId: number | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
 let startTimestamp = 0
 let accumulatedSeconds = 0
+let wakeLock: WakeLockSentinel | null = null
+let hiddenAt: number | null = null
+
+// ─── Wake Lock ────────────────────────────────────────────────────────────────
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return
+  try {
+    wakeLock = await navigator.wakeLock.request('screen')
+    wakeLock.addEventListener('release', () => { wakeLock = null })
+  } catch {
+    // wake lock not available (low battery etc.), silently ignore
+  }
+}
+
+function releaseWakeLock() {
+  wakeLock?.release()
+  wakeLock = null
+}
+
+// Re-acquire after screen turns back on (OS releases lock when page is hidden)
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    if (status.value === 'recording') hiddenAt = Date.now()
+  } else {
+    if (status.value === 'recording') {
+      acquireWakeLock()
+      if (hiddenAt !== null) {
+        const secs = Math.round((Date.now() - hiddenAt) / 1000)
+        if (secs >= 3) {
+          errorMsg.value = `已切回采集页面，后台约 ${secs} 秒，期间轨迹点可能有丢失`
+        }
+        hiddenAt = null
+      }
+    }
+  }
+}
 
 // ─── Computed ─────────────────────────────────────────────────────────────────
 const gpsSignalClass = computed(() => {
@@ -337,7 +373,13 @@ onMounted(() => {
   }
 })
 
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  releaseWakeLock()
   stopWatchAndTimer()
   map?.remove()
 })
@@ -431,6 +473,7 @@ function startTracking() {
   errorMsg.value = ''
   status.value = 'recording'
   startTimestamp = Date.now()
+  acquireWakeLock()
 
   watchId = navigator.geolocation.watchPosition(onGpsSuccess, onGpsError, {
     enableHighAccuracy: true,
@@ -447,12 +490,14 @@ function pauseTracking() {
   status.value = 'paused'
   accumulatedSeconds = elapsedSeconds.value
   stopWatchAndTimer()
+  releaseWakeLock()
 }
 
 function resumeTracking() {
   errorMsg.value = ''
   status.value = 'recording'
   startTimestamp = Date.now()
+  acquireWakeLock()
 
   watchId = navigator.geolocation.watchPosition(onGpsSuccess, onGpsError, {
     enableHighAccuracy: true,
@@ -468,6 +513,7 @@ function resumeTracking() {
 function stopTracking() {
   accumulatedSeconds = elapsedSeconds.value
   stopWatchAndTimer()
+  releaseWakeLock()
   status.value = 'stopped'
 }
 

@@ -3,7 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [ main ]  # 你代码的主分支
-
+  workflow_dispatch:  # 开启手动触发
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
